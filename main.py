@@ -1,7 +1,9 @@
 # main.py
 from fastapi import FastAPI
 from pydantic import BaseModel, HttpUrl
-from typing import List
+import requests
+from pypdf import PdfReader
+import io
 
 # --- Pydantic 모델 정의 ---
 
@@ -28,12 +30,31 @@ def read_root():
 # --- /index API 엔드포인트 생성 ---
 @app.post("/index")
 def index_pdf(request: IndexRequest):
-    print(f"Index 요청 받음: travel_list_id={request.travel_list_id}, url={request.pdf_url}")
-    # TODO: 여기에 PDF를 다운로드하고 텍스트를 추출하여 Vector DB에 저장하는 로직 추가
-    return {"message": "PDF indexing request received successfully."}
+    try:
+        response = requests.get(str(request.pdf_url))
+        response.raise_for_status()
+
+        pdf_file = io.BytesIO(response.content)
+        reader = PdfReader(pdf_file)
+
+        extracted_text = ""
+        for page in reader.pages:
+            extracted_text += page.extract_text() + "\n"
+
+            print("----추출된 텍스트----")
+            print(extracted_text)
+            print("-------------------")
+
+            #TODO: 추출된 텍스트를 Vector DB에 저장하는 로직 추가
+
+            return {"message" : "PDF 처리와 텍스트 추출이 성공적으로 완료됐습니다."}
+
+    except Exception as e:
+        print(f"PDF 처리 실패: {e}")
+        return {"message" : f"PDF 처리 실패. Error: {e}"}
 
 
-# --- /chat API 엔드포인트 생성 ---
+# --- /chat API 엔드포인트 ---
 @app.post("/chat")
 def chat_with_bot(request: ChatRequest):
     print(f"Chat 요청 받음: travel_list_id={request.travel_list_id}, question='{request.question}'")

@@ -4,6 +4,9 @@ from pydantic import BaseModel, HttpUrl
 import requests
 from pypdf import PdfReader
 import io
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.vectorstores import FAISS
 
 # --- Pydantic 모델 정의 ---
 
@@ -21,6 +24,9 @@ class ChatRequest(BaseModel):
 # --- FastAPI 앱 생성 ---
 app = FastAPI()
 
+embeddings = HuggingFaceEmbeddings(model_name="jhgan/ko-sroberta-multitask")
+
+vector_stores = {}
 
 @app.get("/")
 def read_root():
@@ -37,17 +43,22 @@ def index_pdf(request: IndexRequest):
         pdf_file = io.BytesIO(response.content)
         reader = PdfReader(pdf_file)
 
-        extracted_text = ""
-        for page in reader.pages:
-            extracted_text += page.extract_text() + "\n"
+        extracted_text = "".join(page.extract_text() + "\n" for page in reader.pages)
 
-            print("----추출된 텍스트----")
-            print(extracted_text)
-            print("-------------------")
+        #AI 학습 로직 추가
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+        docs = text_splitter.split_text(extracted_text)
 
-            #TODO: 추출된 텍스트를 Vector DB에 저장하는 로직 추가
+        db = FAISS.from_texts(docs, embeddings)
 
-            return {"message" : "PDF 처리와 텍스트 추출이 성공적으로 완료됐습니다."}
+        travel_id = request.travel_list_id
+        if travel_id not in vector_stores:
+            vector_stores[travel_id] = db
+        else:
+            vector_stores[travel_id].merge_from(db)
+
+        print(f"PDF for travel_list_id {travel_id} indexed successfully.")
+        return {"message": "PDF 처리와 인덱싱이 성공적으로 완료되었습니다."}
 
     except Exception as e:
         print(f"PDF 처리 실패: {e}")

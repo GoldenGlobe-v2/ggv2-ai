@@ -10,6 +10,8 @@ from langchain_community.vectorstores import FAISS
 from langchain.chains import RetrievalQA
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
+import redis
+import json
 
 load_dotenv()
 
@@ -24,14 +26,11 @@ class ChatRequest(BaseModel):
 
 # --- FastAPI 앱 및 AI 모델 초기화 ---
 app = FastAPI()
-
-embeddings = HuggingFaceEmbeddings(model_name="jhgan/ko-sroberta-multitask")
-
-# embeddings="gemini-pro"가 아니라 model="gemini-pro"가 올바른 파라미터입니다.
-llm = ChatGoogleGenerativeAI(model="gemini-pro")
-
+embeddings = HuggingFaceEmbeddings(model_name="intfloat/multilingual-e5-small-ko")
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash")
 vector_stores = {}
 
+redis_client = redis.Redis(host="localhost", port=6379, db=0, decode_responses=True)
 @app.get("/")
 def read_root():
     return {"message": "GoldenGlobe AI Server is running!"}
@@ -62,6 +61,13 @@ def chat_with_bot(request: ChatRequest):
     travel_id = request.travel_list_id
     question = request.question
 
+    cache_key = f"chat:{travel_id}:{question}"
+
+    cached_answer = redis_client.get(cache_key)
+    if cached_answer:
+        print(f"Returning cached answer for key: {cache_key}")
+        return {"answer": cached_answer}
+
     if travel_id not in vector_stores:
         return {"answer": "아직 학습된 PDF 문서가 없습니다. 먼저 문서를 업로드해주세요."}
 
@@ -74,6 +80,8 @@ def chat_with_bot(request: ChatRequest):
 
     try:
         answer = qa_chain.run(question)
+        redis_client.setex(cache_key, 3600, answer)
+        print(f"Generated new answer and cached with key: {cache_key}")
         return {"answer": answer}
     except Exception as e:
         return {"answer": "답변을 생성하는 중 오류가 발생했습니다."}

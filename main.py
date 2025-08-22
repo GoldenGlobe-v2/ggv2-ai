@@ -11,7 +11,8 @@ from langchain.chains import RetrievalQA
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
 import redis
-import json
+from redis.exceptions import RedisError
+from typing import Dict
 
 load_dotenv()
 
@@ -26,11 +27,21 @@ class ChatRequest(BaseModel):
 
 # --- FastAPI 앱 및 AI 모델 초기화 ---
 app = FastAPI()
-embeddings = HuggingFaceEmbeddings(model_name="intfloat/multilingual-e5-small-ko")
+embeddings = HuggingFaceEmbeddings(model_name="intfloat/multilingual-e5-small")
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash")
 vector_stores = {}
 
-redis_client = redis.Redis(host="localhost", port=6379, db=0, decode_responses=True)
+def create_redis_client():
+    try:
+        client = redis.Redis(host="localhost", port=6379, db=0, decode_responses=True)
+        client.ping()
+        print("***** Redis connected *****")
+        return client
+    except Exception as e:
+        print(f"***** Redis disabled: {e} *****")
+        return None
+
+redis_client = create_redis_client()
 @app.get("/")
 def read_root():
     return {"message": "GoldenGlobe AI Server is running!"}
@@ -63,9 +74,15 @@ def chat_with_bot(request: ChatRequest):
 
     cache_key = f"chat:{travel_id}:{question}"
 
-    cached_answer = redis_client.get(cache_key)
+    # 1) 캐시 조회 (Redis 없으면 그냥 건너뜀)
+    cached_answer = None
+    if redis_client:
+        try:
+            cached_answer = redis_client.get(cache_key)
+        except RedisError as e:
+            print(f"***** Redis GET error: {e} *****")
+
     if cached_answer:
-        print(f"Returning cached answer for key: {cache_key}")
         return {"answer": cached_answer}
 
     if travel_id not in vector_stores:
@@ -80,8 +97,16 @@ def chat_with_bot(request: ChatRequest):
 
     try:
         answer = qa_chain.run(question)
-        redis_client.setex(cache_key, 3600, answer)
-        print(f"Generated new answer and cached with key: {cache_key}")
+        if redis_client:
+            try:
+                redis_client.setex(cache_key, 3600, answer)
+            except RedisError as e:
+                print(f"***** Redis SETEX error: {e} *****")
         return {"answer": answer}
     except Exception as e:
+        print(f"***** QA error: {e} *****")
         return {"answer": "답변을 생성하는 중 오류가 발생했습니다."}
+
+@app.get("/debug/namespaces")
+def debug_namespaces():
+    return {"keys": list(vector_stores.keys())}
